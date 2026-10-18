@@ -1,30 +1,29 @@
-import Vue from "vue"
-import VueRouter from "vue-router"
+import { createRouter, createWebHistory } from "vue-router"
 import store from "@/store"
-
-Vue.use(VueRouter);
 
 const routes = [
   {
     path: "/",
-    component: () => import("@/views/Home")
+    name: "Home",
+    component: () => import("@/views/Home.vue")
   },
   {
     path: "/about",
-    component: () => import("@/views/About")
+    name: "About",
+    component: () => import("@/views/About.vue")
   },
   {
-    path: "*",
+    path: "/:pathMatch(.*)*",
     redirect: "/"
   }
-];
+]
 
-const router = new VueRouter({
-  mode: "history",
+const router = createRouter({
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes
-});
+})
 
-router.beforeEach((_1, _2, next) => {
+router.beforeEach((_to, _from, next) => {
   store.dispatch("updateBoardState", "unready")
   next()
 })

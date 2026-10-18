@@ -3,133 +3,296 @@
 </template>
 
 <script>
-import Chess from "chess.js"
 import { mapGetters } from "vuex"
-import { markupSquare } from "@/helpers"
+import { markupSquare, unmarkupSquare } from "@/helpers"
 import warnsdorff from "@/warnsdorff"
+
 export default {
   name: "Chessboard",
-  mounted() {
-    this.boardEl = document.querySelector("chess-board")
-    this.boardEl.addEventListener("drop", this.droped)
-    
-    this.reset()
-  },
   data() {
     return {
       boardEl: null,
-      takenSpots: null,
-      game: new Chess(),
-      positionSuffix: " b - - 0 1"
+      playTimer: null
     }
   },
-  computed: mapGetters(["timeouts", "delayTime"]),
+  computed: {
+    ...mapGetters([
+      "boardState",
+      "playbackMode",
+      "currentMoveIndex",
+      "solutionTour",
+      "tourInfo",
+      "delayTime",
+      "hasSolution",
+      "isPlaying"
+    ])
+  },
+  mounted() {
+    this.boardEl = document.querySelector("chess-board")
+    if (this.boardEl) {
+      this.boardEl.addEventListener("drop", this.droped)
+    }
+    this.reset()
+  },
+  beforeUnmount() {
+    this.stopTimer()
+  },
   methods: {
-    changeState(state) {
-      Object.entries(state).forEach(([key, value]) => this.$store.dispatch(key, value))
+    stopTimer() {
+      if (this.playTimer) {
+        clearTimeout(this.playTimer)
+        this.playTimer = null
+      }
     },
     currentPosition() {
-      return Object.keys(this.boardEl.position)[0]
+      if (!this.boardEl || !this.boardEl.position) return null
+      return Object.keys(this.boardEl.position)[0] || null
     },
     selectInBoard(selector) {
+      if (!this.boardEl || !this.boardEl.shadowRoot) return []
       return this.boardEl.shadowRoot.querySelectorAll(selector)
     },
-    markup(target, markup) {
-      const targetId = "#square-" + target
-      const [squareEl] = this.selectInBoard(targetId)
-      markupSquare(markup ? markup : this.takenSpots.length, squareEl)
+    markupSquare(sq, num) {
+      if (!sq) return
+      const [squareEl] = this.selectInBoard("#square-" + sq)
+      if (squareEl) {
+        markupSquare(num, squareEl)
+      }
+    },
+    unmarkupSquare(sq) {
+      if (!sq) return
+      const [squareEl] = this.selectInBoard("#square-" + sq)
+      if (squareEl) {
+        unmarkupSquare(squareEl)
+      }
+    },
+    clearAllBoardMarkups() {
+      this.selectInBoard("#moveNumberContainer").forEach(el => el.remove())
+      this.selectInBoard(".square").forEach(el => (el.style = ""))
     },
     reset() {
-      this.takenSpots = ["c6"]
-      this.boardEl.setPosition({ c6: "bN" })
+      this.stopTimer()
+      this.clearAllBoardMarkups()
+      if (this.boardEl) {
+        this.boardEl.setPosition({ c6: "bN" })
+      }
     },
     boardReady() {
-      this.game.load(this.boardEl.fen() + this.positionSuffix)
-      this.markup(this.currentPosition(), 1)
+      const startPos = this.currentPosition()
+      if (!startPos || !/^[a-h][1-8]$/.test(startPos)) {
+        this.$store.dispatch(
+          "updateInstruction",
+          "⚠️ Please place the knight on a valid chessboard square (a1 to h8) before clicking I'm ready."
+        )
+        return
+      }
 
-      this.changeState({ updateBoardState: "ready" })
+      if (this.boardState === "searching" || this.boardState === "playing") {
+        return
+      }
+
+      this.stopTimer()
+      this.clearAllBoardMarkups()
+
+      // Set state to searching
+      this.$store.dispatch("updateBoardState", "searching")
+      this.$store.dispatch(
+        "updateInstruction",
+        `Calculating legal Knight's Tour from ${startPos}...`
+      )
+
+      setTimeout(() => {
+        const result = warnsdorff.solveKnightsTour(startPos)
+        if (!result.success || !result.tour || result.tour.length !== 64) {
+          this.$store.dispatch("updateBoardState", "stuck")
+          this.$store.dispatch(
+            "updateInstruction",
+            `Search limit reached: No complete tour found from starting square ${startPos}.`
+          )
+          return
+        }
+
+        const validation = warnsdorff.validateTour(result.tour, startPos)
+        if (!validation.valid) {
+          this.$store.dispatch("updateBoardState", "stuck")
+          this.$store.dispatch(
+            "updateInstruction",
+            `Validation failed: ${validation.reason}`
+          )
+          return
+        }
+
+        // Store solution and set move index to 0
+        this.$store.dispatch("setSolution", {
+          tour: result.tour,
+          info: validation
+        })
+        this.$store.dispatch("setCurrentMoveIndex", 0)
+        this.$store.dispatch("updateBoardState", "ready")
+
+        // Render Move 1 on the board
+        this.boardEl.setPosition({ [result.tour[0]]: "bN" })
+        this.markupSquare(result.tour[0], 1)
+
+        this.$store.dispatch(
+          "updateInstruction",
+          `Valid ${validation.tourType} found in ${result.executionTimeMs} ms (${result.backtracks} backtracks)! Select playback mode and press Play or Next Move.`
+        )
+      }, 50)
+    },
+    stepForward() {
+      if (!this.hasSolution || this.currentMoveIndex >= 63) return
+
+      const nextIndex = this.currentMoveIndex + 1
+      const nextSquare = this.solutionTour[nextIndex]
+
+      this.boardEl.setPosition({ [nextSquare]: "bN" })
+      this.markupSquare(nextSquare, nextIndex + 1)
+      this.$store.dispatch("setCurrentMoveIndex", nextIndex)
+
+      if (nextIndex === 63) {
+        this.stopTimer()
+        this.$store.dispatch("updateBoardState", "completed")
+        const tourType = this.tourInfo ? this.tourInfo.tourType : "Tour"
+        this.$store.dispatch(
+          "updateInstruction",
+          `Success: Valid Knight's Tour completed! All 64 squares visited (${tourType}).`
+        )
+      } else if (this.boardState !== "playing") {
+        this.$store.dispatch(
+          "updateInstruction",
+          `Move ${nextIndex + 1} of 64: ${nextSquare}.`
+        )
+      }
+    },
+    stepBackward() {
+      if (!this.hasSolution || this.currentMoveIndex <= 0) return
+
+      if (this.isPlaying) {
+        this.pause()
+      }
+
+      const currentSquare = this.solutionTour[this.currentMoveIndex]
+      this.unmarkupSquare(currentSquare)
+
+      const prevIndex = this.currentMoveIndex - 1
+      const prevSquare = this.solutionTour[prevIndex]
+
+      this.boardEl.setPosition({ [prevSquare]: "bN" })
+      this.$store.dispatch("setCurrentMoveIndex", prevIndex)
+
+      if (this.boardState === "completed") {
+        this.$store.dispatch("updateBoardState", "paused")
+      }
+
+      this.$store.dispatch(
+        "updateInstruction",
+        `Stepped back to Move ${prevIndex + 1} of 64: ${prevSquare}.`
+      )
+    },
+    play() {
+      if (!this.hasSolution) return
+
+      if (this.currentMoveIndex >= 63) {
+        this.restart()
+      }
+
+      this.$store.dispatch("updateBoardState", "playing")
+      this.$store.dispatch(
+        "updateInstruction",
+        `Playing tour animation (Delay: ${this.delayTime} ms)...`
+      )
+
+      this.stopTimer()
+
+      const tick = () => {
+        if (this.boardState !== "playing") return
+        if (this.currentMoveIndex >= 63) {
+          this.stopTimer()
+          return
+        }
+        this.stepForward()
+        if (this.currentMoveIndex < 63 && this.boardState === "playing") {
+          this.playTimer = setTimeout(tick, this.delayTime)
+        }
+      }
+
+      this.playTimer = setTimeout(tick, this.delayTime)
+    },
+    pause() {
+      this.stopTimer()
+      if (this.boardState === "playing") {
+        this.$store.dispatch("updateBoardState", "paused")
+        this.$store.dispatch(
+          "updateInstruction",
+          `Playback paused at Move ${this.currentMoveIndex + 1} of 64.`
+        )
+      }
+    },
+    resume() {
+      this.play()
+    },
+    restart() {
+      this.stopTimer()
+      if (!this.hasSolution) return
+
+      this.clearAllBoardMarkups()
+      const startSquare = this.solutionTour[0]
+      this.boardEl.setPosition({ [startSquare]: "bN" })
+      this.markupSquare(startSquare, 1)
+
+      this.$store.dispatch("setCurrentMoveIndex", 0)
+      this.$store.dispatch("updateBoardState", "ready")
+      const tourType = this.tourInfo ? this.tourInfo.tourType : ""
+      this.$store.dispatch(
+        "updateInstruction",
+        `Restarted at Move 1 of 64 (${tourType}). Ready to play.`
+      )
+    },
+    resetBoard() {
+      this.stopTimer()
+      this.clearAllBoardMarkups()
+      this.reset()
+      this.$store.dispatch("resetTour")
+      this.$store.dispatch(
+        "updateInstruction",
+        "Place the knight at an initial position and press I'm ready"
+      )
+    },
+    setMode(mode) {
+      if (this.isPlaying) {
+        this.pause()
+      }
+      this.$store.dispatch("setPlaybackMode", mode)
+      if (mode === "manual") {
+        this.$store.dispatch(
+          "updateInstruction",
+          "Manual Step-by-Step mode selected. Use Next Move and Previous Move to navigate."
+        )
+      } else {
+        this.$store.dispatch(
+          "updateInstruction",
+          "Automatic Playback mode selected. Press Play to animate."
+        )
+      }
     },
     droped({ detail }) {
-      const { source, target, setAction } = detail
-      
-      if (this.$store.getters.boardState === "unready") {
-        return this.takenSpots[0] = target === "offboard" ? source : target
+      const { target, setAction } = detail
+
+      if (this.boardState === "unready") {
+        if (target === "offboard" || !/^[a-h][1-8]$/.test(target)) {
+          return setAction("snapback")
+        }
+        this.boardEl.setPosition({ [target]: "bN" })
+        this.$store.dispatch(
+          "updateInstruction",
+          `Knight placed on ${target}. Click "I'm ready" to compute solution.`
+        )
+        return
       }
 
-      const move = this.game.move({
-        from: source,
-        to: target
-      })
-      if (!move || this.takenSpots.includes(target)) {
-        this.game.undo()
-        return setAction("snapback")
-      }
-      
-      this.takenSpots.push(target === "offboard" ? source : target)
-      this.game.load(this.game.fen().replace(/\s.+/, this.positionSuffix))
-      
-      this.markup(target)
-      
-      if (this.takenSpots.length === 2) {
-        this.changeState({ updateBoardState: "solving" })
-      } else if (this.takenSpots.length === 64) {
-        this.changeState({ updateBoardState: "solved" })
-      }
-    },
-    nextMove() {
-      const move = warnsdorff.nextMove(this.currentPosition(), this.takenSpots)
-      if (!move) {
-        return this.changeState({ updateBoardState: "stuck" })
-      }
-      
-      this.boardEl.setPosition({ [move]: "bN" })
-      this.game.load(this.boardEl.fen() + this.positionSuffix)
-      
-      setTimeout(() => this.markup(move), 150)
-      
-      if (this.takenSpots.length === 2) {
-        this.changeState({ updateBoardState: "solving" })
-      } else if (this.takenSpots.length === 64) {
-        this.changeState({ updateBoardState: "solved" })
-      }
-    },
-    takeTour() {
-      this.changeState({ updateBoardState: "visualizing" })
-      const currentPosition = this.currentPosition()
-      try {
-        warnsdorff.takeTour(currentPosition, this.takenSpots)
-      } catch {
-        return this.changeState({ updateBoardState: "stuck" })
-      }
-      
-      const currentPositionIndex = this.takenSpots.indexOf(currentPosition)
-      const tour = this.takenSpots.slice(currentPositionIndex + 1)
-      this.visualizeTour(tour)
-      this.game.load(this.boardEl.fen() + this.positionSuffix)
-    },
-    visualizeTour(tour) {
-      const offset = 64 - tour.length
-      
-      tour.forEach((move, index) => {
-        const timeout = setTimeout(() => {
-          this.boardEl.setPosition({ [move]: "bN" })
-          setTimeout(() => this.markup(move, offset + index + 1), this.delayTime)
-        }, this.delayTime * index)
-        this.timeouts.push(timeout)
-      })
-
-      const timeout = setTimeout(() => {
-        this.changeState({ updateBoardState: "solved" })
-      }, this.delayTime * tour.length)
-      this.timeouts.push(timeout)
-    },
-    clearBoard() {
-      setTimeout(() => {
-        this.selectInBoard(".square").forEach(square => square.style = "")
-        this.selectInBoard("#moveNumberContainer").forEach(container => container.remove())
-      }, this.delayTime)
-      this.reset()
-      this.changeState({ updateBoardState: "unready" })
+      // During solution playback, manual drag-and-drop is locked
+      return setAction("snapback")
     }
   }
 }
@@ -137,8 +300,8 @@ export default {
 
 <style scoped>
 chess-board {
-  --dark-color:  #61774B;
-  --light-color:  #EEEED2;
+  --dark-color: #61774B;
+  --light-color: #EEEED2;
   width: 550px;
   margin: auto;
   padding: 3rem 0 0 0;

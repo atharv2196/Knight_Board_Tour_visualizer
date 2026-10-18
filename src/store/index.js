@@ -1,38 +1,22 @@
-import Vue from "vue"
-import Vuex from "vuex"
+import { createStore } from "vuex"
 import board from "./modules/board"
 
-Vue.use(Vuex)
-
-export default new Vuex.Store({
+export default createStore({
   modules: { board },
   state: {
-    instruction: "",
-    timeouts: [],
-    delayTime: 150
+    instruction: "Place the knight at an initial position and press I'm ready"
   },
   mutations: {
     UPDATE_INSTRUCTION(state, instruction) {
       state.instruction = instruction
-    },
-    CLEAR_TIMEOUTS(state) {
-      state.timeouts.forEach(clearTimeout)
-    },
-    RESET_TIMEOUTS(state) {
-      state.timeouts = []
-    },
-    UPDATE_DELAY_TIME(state, delay) {
-      state.delayTime = delay
     }
   },
   actions: {
-    updateDelayTime({ commit }, payload) {
-      commit("UPDATE_DELAY_TIME", payload)
+    updateInstruction({ commit }, payload) {
+      commit("UPDATE_INSTRUCTION", payload)
     }
   },
   getters: {
-    instruction: ({ instruction }) => instruction,
-    timeouts: ({ timeouts }) => timeouts,
-    delayTime: ({ delayTime }) => delayTime
+    instruction: ({ instruction }) => instruction
   }
 })
